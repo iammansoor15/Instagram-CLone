@@ -6,6 +6,7 @@ import Login from './components/Login'
 import MainLayout from './components/MainLayout'
 import Profile from './components/Profile'
 import Signup from './components/Signup'
+import CallModal from './components/CallModal'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import { io } from "socket.io-client";
 import { useDispatch, useSelector } from 'react-redux'
@@ -86,6 +87,7 @@ function App() {
   return (
     <>
       <RouterProvider router={browserRouter} />
+      <CallModal />
     </>
   )
 }

@@ -30,6 +30,22 @@ io.on('connection', (socket)=>{
         console.log('📞 Call request from:', from, 'to:', to);
         const receiverSocketId = getReceiverSocketId(to);
         if (receiverSocketId) {
+            // Check if the receiver is already calling the sender (race condition)
+            const receiverSocket = io.sockets.sockets.get(receiverSocketId);
+            if (receiverSocket && receiverSocket.callState && receiverSocket.callState.isCalling === from) {
+                console.log('⚠️ Race condition detected: both users calling each other');
+                // Handle race condition by rejecting the second call
+                socket.emit('call-failed', {
+                    to: from,
+                    from: to,
+                    reason: 'Both users tried to call simultaneously'
+                });
+                return;
+            }
+
+            // Store call state for race condition detection
+            socket.callState = { isCalling: to };
+
             io.to(receiverSocketId).emit('incoming-call', {
                 from,
                 callerName,
@@ -45,6 +61,8 @@ io.on('connection', (socket)=>{
         if (receiverSocketId) {
             io.to(receiverSocketId).emit('call-accepted', { from });
         }
+        // Clear call state on acceptance
+        socket.callState = null;
     });
 
     socket.on('call-rejected', ({ to, from }) => {
@@ -53,6 +71,8 @@ io.on('connection', (socket)=>{
         if (receiverSocketId) {
             io.to(receiverSocketId).emit('call-rejected', { from });
         }
+        // Clear call state on rejection
+        socket.callState = null;
     });
 
     socket.on('call-ended', ({ to, from }) => {
@@ -61,6 +81,8 @@ io.on('connection', (socket)=>{
         if (receiverSocketId) {
             io.to(receiverSocketId).emit('call-ended', { from });
         }
+        // Clear call state on call end
+        socket.callState = null;
     });
 
     socket.on('call-failed', ({ to, from, reason }) => {
@@ -69,6 +91,8 @@ io.on('connection', (socket)=>{
         if (receiverSocketId) {
             io.to(receiverSocketId).emit('call-failed', { from, reason });
         }
+        // Clear call state on call failure
+        socket.callState = null;
     });
 
     // Handle WebRTC events
@@ -92,6 +116,8 @@ io.on('connection', (socket)=>{
         if(userId){
             delete userSocketMap[userId];
         }
+        // Clear call state on disconnect
+        socket.callState = null;
         io.emit('getOnlineUsers', Object.keys(userSocketMap));
     });
 })

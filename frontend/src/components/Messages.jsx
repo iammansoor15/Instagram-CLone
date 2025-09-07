@@ -2,15 +2,40 @@ import React from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar'
 import { Button } from './ui/button'
 import { Link } from 'react-router-dom'
-import { useSelector } from 'react-redux'
+import { useSelector, useDispatch } from 'react-redux'
 import useGetAllMessage from '@/hooks/useGetAllMessage'
 import useGetRTM from '@/hooks/useGetRTM'
+import { Phone } from 'lucide-react'
+import { startOutgoingCall } from '@/redux/callSlice'
+import { toast } from 'sonner'
 
 const Messages = ({ selectedUser }) => {
     useGetRTM();
     useGetAllMessage();
     const {messages} = useSelector(store=>store.chat);
     const {user} = useSelector(store=>store.auth);
+    const {socket} = useSelector(store=>store.socketio);
+    const dispatch = useDispatch();
+
+    const handleCallUser = () => {
+        if (!socket) {
+            toast.error('Connection not available');
+            return;
+        }
+
+        if (!selectedUser) {
+            toast.error('No user selected');
+            return;
+        }
+
+        console.log('📞 Initiating call to:', selectedUser.username);
+        dispatch(startOutgoingCall({
+            remoteUser: selectedUser,
+            callType: 'audio'
+        }));
+
+        toast.info(`Calling ${selectedUser.username}...`);
+    };
     return (    
         <div className='overflow-y-auto flex-1 p-4'>
             <div className='flex justify-center'>
@@ -20,7 +45,19 @@ const Messages = ({ selectedUser }) => {
                         <AvatarFallback>CN</AvatarFallback>
                     </Avatar>
                     <span>{selectedUser?.username}</span>
-                    <Link to={`/profile/${selectedUser?._id}`}><Button className="h-8 my-2" variant="secondary">View profile</Button></Link>
+                    <div className="flex gap-2 my-2">
+                        <Link to={`/profile/${selectedUser?._id}`}>
+                            <Button className="h-8" variant="secondary">View profile</Button>
+                        </Link>
+                        <Button
+                            onClick={handleCallUser}
+                            className="h-8 bg-green-600 hover:bg-green-700"
+                            variant="default"
+                        >
+                            <Phone className="w-4 h-4 mr-1" />
+                            Call
+                        </Button>
+                    </div>
                 </div>
             </div>
             <div className='flex flex-col gap-3'>

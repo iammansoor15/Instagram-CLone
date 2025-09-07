@@ -170,6 +170,14 @@ const CallModal = () => {
     // Handle initiating a call
     const initiateCall = async (targetUser) => {
         console.log('📞 Initiating call to:', targetUser.username);
+
+        // Check if we're already in a call
+        if (isCallActive || isIncomingCall || isOutgoingCall) {
+            console.log('⚠️ Already in a call, cannot initiate new call');
+            toast.error('Cannot call - already in another call');
+            return;
+        }
+
         setIsConnecting(true);
 
         dispatch(startOutgoingCall({
@@ -390,9 +398,20 @@ const CallModal = () => {
     useEffect(() => {
         if (!socket) return;
 
-        // Handle incoming call
+    // Handle incoming call
         const handleIncomingCall = async ({ from, callerName, callerAvatar, offer }) => {
             console.log('📞 Incoming call from:', callerName);
+
+            // Check if we're already in a call or outgoing call
+            if (isCallActive || isOutgoingCall) {
+                console.log('⚠️ Already in a call, rejecting incoming call');
+                socket.emit('call-rejected', {
+                    to: from,
+                    from: user._id
+                });
+                toast.error('Call rejected - already in another call');
+                return;
+            }
 
             dispatch(receiveIncomingCall({
                 callerInfo: { from, callerName, callerAvatar, offer }
@@ -416,7 +435,7 @@ const CallModal = () => {
         const handleCallRejected = ({ from }) => {
             console.log('❌ Call rejected by:', from);
             toast.error('Call was rejected');
-            handleEndCall();
+            handleEndCall(true); // Remote rejection, treat as remote end
         };
 
         // Handle WebRTC answer
@@ -451,7 +470,14 @@ const CallModal = () => {
         // Handle call failed
         const handleCallFailed = ({ reason }) => {
             console.log('❌ Call failed:', reason);
-            toast.error(`Call failed: ${reason}`);
+
+            // Handle race condition message more gracefully
+            let errorMessage = reason;
+            if (reason && reason.includes('simultaneously')) {
+                errorMessage = 'Both users tried to call at the same time. Try again!';
+            }
+
+            toast.error(`Call failed: ${errorMessage}`);
             handleEndCall(true); // Remote failure, treat as remote end
         };
 
