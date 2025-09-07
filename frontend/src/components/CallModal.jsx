@@ -110,7 +110,7 @@ const CallModal = () => {
                 // Only handle end call if not already handled by socket event and call is not already ending
                 if ((isCallActive || isIncomingCall || isOutgoingCall) && !isCallEnding) {
                     console.log('🔄 Connection state triggered call end');
-                    handleEndCall();
+                    handleEndCall(false); // Local end triggered by connection state change
                 }
             }
         };
@@ -181,7 +181,7 @@ const CallModal = () => {
             // Get microphone access first
             const stream = await getUserMedia();
             if (!stream) {
-                handleEndCall();
+                handleEndCall(false); // Local end due to media access failure
                 return;
             }
 
@@ -219,7 +219,7 @@ const CallModal = () => {
             console.error('❌ Error initiating call:', error);
             toast.error('Failed to start call');
             setIsConnecting(false);
-            handleEndCall();
+            handleEndCall(false); // Local end due to initiation error
         }
     };
 
@@ -278,7 +278,7 @@ const CallModal = () => {
             console.error('❌ Error accepting call:', error);
             toast.error('Failed to accept call');
             setIsConnecting(false);
-            handleEndCall();
+            handleEndCall(false); // Local end due to acceptance error
         }
     };
 
@@ -296,38 +296,43 @@ const CallModal = () => {
     };
 
     // Handle ending call - FIXED: Set call ending flag to prevent double cleanup
-    const handleEndCall = () => {
+    const handleEndCall = (isRemoteEnd = false) => {
         if (isCallEnding) {
             console.log('⚠️ Call already ending, skipping duplicate cleanup');
             return;
         }
 
-        console.log('🔚 Ending call...');
+        console.log('🔚 Ending call...', isRemoteEnd ? '(remote end)' : '(local end)');
         setIsCallEnding(true); // Prevent double cleanup
 
-        // Determine target ID before cleanup
-        let targetId = null;
-        if (isOutgoingCall && remoteUser?._id) {
-            targetId = remoteUser._id;
-            console.log('🎯 Target (outgoing call):', targetId);
-        } else if (isIncomingCall && callerInfo?.from) {
-            targetId = callerInfo.from;
-            console.log('🎯 Target (incoming call):', targetId);
-        } else if (isCallActive) {
-            // During active call, check both sources
-            targetId = remoteUser?._id || callerInfo?.from;
-            console.log('🎯 Target (active call):', targetId);
-        }
+        // Only notify other party if this is a LOCAL end (not remote)
+        if (!isRemoteEnd) {
+            // Determine target ID before cleanup
+            let targetId = null;
+            if (isOutgoingCall && remoteUser?._id) {
+                targetId = remoteUser._id;
+                console.log('🎯 Target (outgoing call):', targetId);
+            } else if (isIncomingCall && callerInfo?.from) {
+                targetId = callerInfo.from;
+                console.log('🎯 Target (incoming call):', targetId);
+            } else if (isCallActive) {
+                // During active call, check both sources
+                targetId = remoteUser?._id || callerInfo?.from;
+                console.log('🎯 Target (active call):', targetId);
+            }
 
-        // Notify other party BEFORE cleanup
-        if (socket && targetId) {
-            console.log('📤 Sending end-call notification to:', targetId);
-            socket.emit('end-call', {
-                to: targetId,
-                from: user._id
-            });
+            // Notify other party BEFORE cleanup
+            if (socket && targetId) {
+                console.log('📤 Sending end-call notification to:', targetId);
+                socket.emit('end-call', {
+                    to: targetId,
+                    from: user._id
+                });
+            } else {
+                console.warn('❌ Could not determine target for end-call notification');
+            }
         } else {
-            console.warn('❌ Could not determine target for end-call notification');
+            console.log('🔕 Skipping end-call notification (remote end)');
         }
 
         // Stop timer
@@ -424,7 +429,7 @@ const CallModal = () => {
                     console.log('✅ Answer processed');
                 } catch (error) {
                     console.error('❌ Error processing answer:', error);
-                    handleEndCall();
+                    handleEndCall(false); // Local end due to WebRTC error
                 }
             }
         };
@@ -447,7 +452,7 @@ const CallModal = () => {
         const handleCallFailed = ({ reason }) => {
             console.log('❌ Call failed:', reason);
             toast.error(`Call failed: ${reason}`);
-            handleEndCall();
+            handleEndCall(true); // Remote failure, treat as remote end
         };
 
         // Handle call ended - FIXED: Immediate termination without delay
@@ -457,35 +462,8 @@ const CallModal = () => {
             // Force immediate cleanup without notifying other party (they already ended it)
             console.log('⚡ Immediate call termination');
 
-            // Stop timer immediately
-            if (callTimerRef.current) {
-                clearInterval(callTimerRef.current);
-                callTimerRef.current = null;
-            }
-
-            // Stop local stream immediately
-            if (localStreamRef.current) {
-                localStreamRef.current.getTracks().forEach(track => {
-                    track.stop();
-                });
-                localStreamRef.current = null;
-            }
-
-            // Force close peer connection immediately
-            if (pcRef.current) {
-                pcRef.current.close();
-                pcRef.current = null;
-            }
-
-            // Reset local state immediately
-            setCallDuration(0);
-            setIsConnecting(false);
-            setIsMuted(false);
-            setIsSpeakerOn(true);
-            setIsCallEnding(false); // Reset call ending flag
-
-            // Dispatch Redux action immediately
-            dispatch(endCall());
+            // Use the unified handleEndCall with isRemoteEnd=true to prevent duplicate cleanup
+            handleEndCall(true); // Pass true to indicate this is a remote end
 
             toast.info('Call ended');
             console.log('✅ Call terminated immediately (remote end)');
@@ -522,7 +500,7 @@ const CallModal = () => {
     // Cleanup on unmount
     useEffect(() => {
         return () => {
-            handleEndCall();
+            handleEndCall(false); // Local cleanup on component unmount
         };
     }, []);
 
@@ -612,7 +590,7 @@ const CallModal = () => {
 
                         {/* End Call / Reject Button */}
                         <Button
-                            onClick={isIncomingCall ? handleRejectCall : handleEndCall}
+                            onClick={isIncomingCall ? handleRejectCall : () => handleEndCall(false)}
                             variant="destructive"
                             size="lg"
                             className="rounded-full w-14 h-14 bg-red-600 hover:bg-red-700"
