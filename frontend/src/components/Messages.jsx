@@ -19,16 +19,21 @@ const Messages = ({ selectedUser }) => {
 
     const handleCallUser = () => {
         if (!socket) {
+            console.log('❌ Socket not available for call initiation');
             toast.error('Connection not available');
             return;
         }
 
         if (!selectedUser) {
+            console.log('❌ No user selected for call');
             toast.error('No user selected');
             return;
         }
 
-        console.log('📞 Initiating call to:', selectedUser.username);
+        console.log('📞 Initiating call to:', selectedUser.username, 'ID:', selectedUser._id);
+        console.log('📞 Socket connected:', socket.connected);
+        console.log('📞 Socket ID:', socket.id);
+
         dispatch(startOutgoingCall({
             remoteUser: selectedUser,
             callType: 'audio'

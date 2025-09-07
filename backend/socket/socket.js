@@ -27,9 +27,15 @@ io.on('connection', (socket)=>{
 
     // Handle call events
     socket.on('call-user', ({ to, from, callerName, callerAvatar, offer }) => {
-        console.log('📞 Call request from:', from, 'to:', to);
+        console.log('📞 Call request received from:', from, 'to:', to);
+        console.log('📞 Caller details:', { callerName, callerAvatar, offer: offer ? 'present' : 'missing' });
+
         const receiverSocketId = getReceiverSocketId(to);
+        console.log('📞 Receiver socket ID lookup result:', receiverSocketId);
+
         if (receiverSocketId) {
+            console.log('📞 Receiver socket found, checking for race conditions');
+
             // Check if the receiver is already calling the sender (race condition)
             const receiverSocket = io.sockets.sockets.get(receiverSocketId);
             if (receiverSocket && receiverSocket.callState && receiverSocket.callState.isCalling === from) {
@@ -45,6 +51,7 @@ io.on('connection', (socket)=>{
 
             // Store call state for race condition detection
             socket.callState = { isCalling: to };
+            console.log('📞 Call state stored, forwarding incoming-call event');
 
             io.to(receiverSocketId).emit('incoming-call', {
                 from,
@@ -52,14 +59,24 @@ io.on('connection', (socket)=>{
                 callerAvatar,
                 offer
             });
+
+            console.log('📞 Incoming-call event forwarded successfully');
+        } else {
+            console.log('❌ Receiver socket ID not found for user:', to);
+            console.log('❌ Available user socket mappings:', Object.keys(userSocketMap));
         }
     });
 
     socket.on('call-accepted', ({ to, from }) => {
         console.log('✅ Call accepted by:', from, 'for:', to);
+        console.log('✅ Looking for receiver socket ID for user:', to);
         const receiverSocketId = getReceiverSocketId(to);
+        console.log('✅ Receiver socket ID:', receiverSocketId);
         if (receiverSocketId) {
+            console.log('✅ Forwarding call-accepted event to:', receiverSocketId);
             io.to(receiverSocketId).emit('call-accepted', { from });
+        } else {
+            console.log('❌ Receiver socket ID not found for user:', to);
         }
         // Clear call state on acceptance
         socket.callState = null;
@@ -98,9 +115,14 @@ io.on('connection', (socket)=>{
     // Handle WebRTC events
     socket.on('webrtc-answer', ({ to, answer }) => {
         console.log('📨 WebRTC answer from:', userId, 'to:', to);
+        console.log('📨 Looking for receiver socket ID for WebRTC answer:', to);
         const receiverSocketId = getReceiverSocketId(to);
+        console.log('📨 Receiver socket ID for answer:', receiverSocketId);
         if (receiverSocketId) {
+            console.log('📨 Forwarding WebRTC answer to:', receiverSocketId);
             io.to(receiverSocketId).emit('webrtc-answer', { answer });
+        } else {
+            console.log('❌ Receiver socket ID not found for WebRTC answer, user:', to);
         }
     });
 
