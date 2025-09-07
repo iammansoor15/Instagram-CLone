@@ -99,19 +99,27 @@ const CallModal = () => {
         pc.onconnectionstatechange = () => {
             console.log('🔗 Connection state:', pc.connectionState);
             if (pc.connectionState === 'connected') {
-                console.log('✅ Call connected!');
-                dispatch(callConnected());
+                console.log('✅ WebRTC connection state: connected');
+                // Don't dispatch callConnected here - let WebRTC answer handler do it
+                // to ensure proper timing and prevent race conditions
                 setIsConnecting(false);
-                startCallTimer();
-                toast.success('Call connected!');
+                if (callStatus !== 'connected') {
+                    startCallTimer();
+                }
             } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
                 console.log('❌ Call disconnected/failed');
                 setIsConnecting(false);
-                // Only handle end call if not already handled by socket event and call is not already ending
-                if ((isCallActive || isIncomingCall || isOutgoingCall) && !isCallEnding) {
-                    console.log('🔄 Connection state triggered call end');
-                    handleEndCall(false); // Local end triggered by connection state change
-                }
+
+                // Add a small delay to prevent premature cleanup during connection establishment
+                // and only handle end call if not already handled by socket event
+                setTimeout(() => {
+                    if ((isCallActive || isIncomingCall || isOutgoingCall) && !isCallEnding && callDuration > 1) {
+                        console.log('🔄 Connection state triggered call end after delay');
+                        handleEndCall(false); // Local end triggered by connection state change
+                    } else {
+                        console.log('🔄 Ignoring connection state change - call might still be establishing or already ending');
+                    }
+                }, 1000); // Wait 1 second to ensure stable connection
             }
         };
 
@@ -308,7 +316,7 @@ const CallModal = () => {
             console.log('📞 Dispatching acceptIncomingCall action');
             dispatch(acceptIncomingCall());
             console.log('✅ Call accepted');
-            toast.info('Call accepted, connecting...');
+            // Don't show toast here - WebRTC answer processing will show connection toast
 
         } catch (error) {
             console.error('❌ Error accepting call:', error);
@@ -333,6 +341,12 @@ const CallModal = () => {
 
     // Handle ending call - FIXED: Set call ending flag to prevent double cleanup
     const handleEndCall = (isRemoteEnd = false) => {
+        // Prevent cleanup if call was just connected and is stable
+        if (!isRemoteEnd && callStatus === 'connected' && callDuration < 2) {
+            console.log('⚠️ Call just connected, not ending local call yet');
+            return;
+        }
+
         if (isCallEnding) {
             console.log('⚠️ Call already ending, skipping duplicate cleanup');
             return;
@@ -469,6 +483,12 @@ const CallModal = () => {
             console.log('✅ Call accepted by:', from);
             console.log('✅ Current call state before acceptance:', { isCallActive, isIncomingCall, isOutgoingCall, callStatus });
 
+            // Check if we're already processing this acceptance
+            if (isCallActive || callStatus === 'connecting') {
+                console.log('⚠️ Call already active or connecting, skipping duplicate acceptance');
+                return;
+            }
+
             // Just acknowledge that call was accepted
             // The actual WebRTC answer will come via 'webrtc-answer' event
             toast.info('Call accepted, establishing connection...');
@@ -485,14 +505,31 @@ const CallModal = () => {
         const handleWebRTCAnswer = async ({ answer }) => {
             console.log('📨 Received WebRTC answer');
 
+            // Check if we already have a connection established
+            if (callStatus === 'connected') {
+                console.log('⚠️ Call already connected, ignoring duplicate WebRTC answer');
+                return;
+            }
+
             if (pcRef.current) {
                 try {
                     await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
                     console.log('✅ Answer processed');
+
+                    // Wait a moment for the connection to stabilize before marking as connected
+                    setTimeout(() => {
+                        if (!isCallEnding && callStatus !== 'connected') {
+                            dispatch(callConnected());
+                            toast.success('Call connected!');
+                        }
+                    }, 500);
+
                 } catch (error) {
                     console.error('❌ Error processing answer:', error);
                     handleEndCall(false); // Local end due to WebRTC error
                 }
+            } else {
+                console.log('⚠️ No peer connection available for WebRTC answer');
             }
         };
 
@@ -527,6 +564,12 @@ const CallModal = () => {
         // Handle call ended - FIXED: Immediate termination without delay
         const handleCallEnded = ({ from }) => {
             console.log('🔚 Call ended by:', from);
+
+            // Check if we're already ending the call to prevent duplicate execution
+            if (isCallEnding) {
+                console.log('⚠️ Already processing call end, skipping duplicate');
+                return;
+            }
 
             // Force immediate cleanup without notifying other party (they already ended it)
             console.log('⚡ Immediate call termination');
@@ -568,12 +611,29 @@ const CallModal = () => {
         }
     }, [isOutgoingCall, remoteUser, socket]);
 
-    // Cleanup on unmount
+    // Cleanup on unmount - only if there's an active call and prevent immediate cleanup
     useEffect(() => {
+        let cleanupTimeout;
+
         return () => {
-            handleEndCall(false); // Local cleanup on component unmount
+            // Clear any pending timeouts
+            if (cleanupTimeout) {
+                clearTimeout(cleanupTimeout);
+            }
+
+            // Only cleanup if there's actually an active call state and it's not just connected
+            if ((isCallActive || isIncomingCall || isOutgoingCall) && callStatus !== 'connecting') {
+                console.log('🧹 Component unmounting - scheduling cleanup');
+                // Add a delay to prevent immediate cleanup during call establishment
+                cleanupTimeout = setTimeout(() => {
+                    if (!isCallEnding) {
+                        console.log('🧹 Component unmounting - executing cleanup');
+                        handleEndCall(false); // Local cleanup on component unmount
+                    }
+                }, 2000); // Wait 2 seconds to ensure call is stable
+            }
         };
-    }, []);
+    }, [isCallActive, isIncomingCall, isOutgoingCall, callStatus, isCallEnding]); // Add dependencies to prevent unnecessary re-runs
 
     const isModalOpen = isCallActive || isIncomingCall || isOutgoingCall;
     const showTimer = callStatus === 'connected' && callDuration > 0;
@@ -585,163 +645,108 @@ const CallModal = () => {
 
     console.log('🎨 Rendering CallModal with isModalOpen:', isModalOpen);
 
-    // TEMPORARY: Replace Dialog with simple div for testing
+    console.log('🎨 Rendering CallModal with isModalOpen:', isModalOpen);
+
     return (
-        <div style={{
-            position: 'fixed',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            backgroundColor: 'rgba(0, 0, 0, 0.9)',
-            color: 'white',
-            padding: '20px',
-            borderRadius: '10px',
-            zIndex: 9999,
-            display: isModalOpen ? 'block' : 'none',
-            minWidth: '300px',
-            textAlign: 'center'
-        }}>
-            {console.log('🎨 CallModal simple div rendering')}
-            <div>
-                <h2 style={{ marginBottom: '10px', fontSize: '18px' }}>
+        <Dialog open={isModalOpen}>
+            <DialogContent className="sm:max-w-md bg-gray-900 border-gray-700 text-white">
+                <DialogTitle className="sr-only">
                     {isIncomingCall ? 'Incoming Call' : isOutgoingCall ? 'Outgoing Call' : 'Active Call'}
-                </h2>
-                <p style={{ marginBottom: '20px', fontSize: '14px', opacity: 0.8 }}>
+                </DialogTitle>
+                <DialogDescription className="sr-only">
                     {isIncomingCall
                         ? `Incoming call from ${callerInfo?.callerName || 'Unknown caller'}`
                         : isOutgoingCall
                         ? `Calling ${remoteUser?.username || 'Unknown user'}`
                         : `Active call with ${(remoteUser || callerInfo)?.username || callerInfo?.callerName || 'Unknown user'}`
                     }
-                </p>
+                </DialogDescription>
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px', gap: '20px' }}>
+                <div className="flex flex-col items-center justify-center p-6 space-y-6">
                     {/* Remote User Avatar & Info */}
-                    <div style={{ textAlign: 'center' }}>
-                        <div style={{
-                            width: '96px',
-                            height: '96px',
-                            borderRadius: '50%',
-                            backgroundColor: '#3B82F6',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '36px',
-                            color: 'white',
-                            margin: '0 auto 16px'
-                        }}>
-                            {(remoteUser || callerInfo)?.username?.[0] || callerInfo?.callerName?.[0] || 'U'}
-                        </div>
+                    <div className="text-center">
+                        <Avatar className="w-24 h-24 mx-auto mb-4">
+                            <AvatarImage
+                                src={(remoteUser || callerInfo)?.profilePicture || callerInfo?.callerAvatar}
+                                alt="caller"
+                            />
+                            <AvatarFallback className="text-2xl bg-blue-600">
+                                {(remoteUser || callerInfo)?.username?.[0] || callerInfo?.callerName?.[0] || 'U'}
+                            </AvatarFallback>
+                        </Avatar>
 
-                        <h3 style={{ fontSize: '20px', fontWeight: '600', color: 'white', marginBottom: '8px' }}>
+                        <h3 className="text-xl font-semibold text-white mb-2">
                             {(remoteUser || callerInfo)?.username || callerInfo?.callerName}
                         </h3>
 
                         {showTimer && (
-                            <p style={{ color: '#10B981', fontSize: '14px', fontWeight: '500' }}>
+                            <p className="text-green-400 text-sm font-medium">
                                 {formatDuration(callDuration)}
                             </p>
                         )}
 
                         {(isOutgoingCall || isConnecting) && callStatus !== 'connected' && (
-                            <p style={{ color: '#3B82F6', fontSize: '14px' }}>
+                            <p className="text-blue-400 text-sm">
                                 {isConnecting ? 'Connecting...' : 'Calling...'}
                             </p>
                         )}
 
                         {isIncomingCall && (
-                            <p style={{ color: '#F59E0B', fontSize: '14px' }}>Incoming call...</p>
+                            <p className="text-yellow-400 text-sm">Incoming call...</p>
                         )}
                     </div>
 
                     {/* Call Controls */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
+                    <div className="flex items-center justify-center space-x-4">
                         {callStatus === 'connected' && (
                             <>
                                 {/* Mute Button */}
-                                <button
+                                <Button
                                     onClick={toggleMute}
-                                    style={{
-                                        borderRadius: '50%',
-                                        width: '48px',
-                                        height: '48px',
-                                        border: 'none',
-                                        backgroundColor: isMuted ? '#DC2626' : '#374151',
-                                        color: 'white',
-                                        cursor: 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        fontSize: '20px'
-                                    }}
+                                    variant="ghost"
+                                    size="lg"
+                                    className={`rounded-full w-12 h-12 ${
+                                        isMuted ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
+                                    }`}
                                 >
-                                    {isMuted ? '🎤' : '🎙️'}
-                                </button>
+                                    {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                                </Button>
 
                                 {/* Speaker Button */}
-                                <button
+                                <Button
                                     onClick={toggleSpeaker}
-                                    style={{
-                                        borderRadius: '50%',
-                                        width: '48px',
-                                        height: '48px',
-                                        border: 'none',
-                                        backgroundColor: !isSpeakerOn ? '#DC2626' : '#374151',
-                                        color: 'white',
-                                        cursor: 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        fontSize: '20px'
-                                    }}
+                                    variant="ghost"
+                                    size="lg"
+                                    className={`rounded-full w-12 h-12 ${
+                                        !isSpeakerOn ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
+                                    }`}
                                 >
-                                    {isSpeakerOn ? '🔊' : '🔇'}
-                                </button>
+                                    {isSpeakerOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                                </Button>
                             </>
                         )}
 
                         {/* End Call / Reject Button */}
-                        <button
+                        <Button
                             onClick={isIncomingCall ? handleRejectCall : () => handleEndCall(false)}
-                            style={{
-                                borderRadius: '50%',
-                                width: '56px',
-                                height: '56px',
-                                border: 'none',
-                                backgroundColor: '#DC2626',
-                                color: 'white',
-                                cursor: 'pointer',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '24px'
-                            }}
+                            variant="destructive"
+                            size="lg"
+                            className="rounded-full w-14 h-14 bg-red-600 hover:bg-red-700"
                         >
-                            📞
-                        </button>
+                            <PhoneOff className="w-6 h-6" />
+                        </Button>
 
                         {/* Accept Call Button (only for incoming calls) */}
                         {isIncomingCall && (
                             <>
                                 {console.log('🎯 Rendering accept button - isIncomingCall:', isIncomingCall)}
-                                <button
+                                <Button
                                     onClick={handleAcceptCall}
-                                    style={{
-                                        borderRadius: '50%',
-                                        width: '56px',
-                                        height: '56px',
-                                        border: 'none',
-                                        backgroundColor: '#10B981',
-                                        color: 'white',
-                                        cursor: 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        fontSize: '24px'
-                                    }}
+                                    size="lg"
+                                    className="rounded-full w-14 h-14 bg-green-600 hover:bg-green-700"
                                 >
-                                    📞
-                                </button>
+                                    <Phone className="w-6 h-6" />
+                                </Button>
                             </>
                         )}
                     </div>
@@ -750,8 +755,8 @@ const CallModal = () => {
                     <audio ref={localAudioRef} autoPlay muted />
                     <audio ref={remoteAudioRef} autoPlay />
                 </div>
-            </div>
-        </div>
+            </DialogContent>
+        </Dialog>
     );
 };
 
